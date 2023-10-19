@@ -1,0 +1,638 @@
+---
+title: "A naturally occurring variant of MBD4 causes maternal germline hypermutation in primates - R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library("BSgenome")
+library(BSgenome.Mmulatta.UCSC.rheMac10)
+library(BSgenome.Hsapiens.UCSC.hg19)
+human_genome <- BSgenome.Hsapiens.UCSC.hg19
+ref_genome <- BSgenome.Mmulatta.UCSC.rheMac10
+library("circlize")
+library("ciTools")
+library("ComplexHeatmap")
+library("cowplot")
+library("deconstructSigs")
+library("devtools")
+library("dplyr")
+library("finalfit")
+library("GenomicRanges")
+library("ggbeeswarm")
+library("ggeffects")
+library("ggiraphExtra")
+library("ggplot2")
+library("ggpubr")
+library("ggthemes")
+library("gridExtra")
+library("huxtable")
+library("jtools")
+library("lme4")
+library("lmerTest")
+library("lmtest")
+library("MASS")
+library("multcomp")
+library("MutationalPatterns")
+library("nlme")
+library("patchwork")
+library("plotly")
+library("plyr")
+library("randomcoloR")
+library("RColorBrewer")
+library("rcompanion")
+library("reshape2")
+library("Rmisc")
+library("rstatix")
+library("rtracklayer")
+library("simpleboot")
+library("stats")
+library("stringr")
+library("tidyverse")
+library("viridis")
+
+```
+
+# De novo mutation identification
+```{r}
+metadata <- read.table("Data_files/Metadata_all_samples.txt", header=T, check.names=FALSE, sep="\t",quote = "")
+dim(metadata)
+
+# DeNovoGear SNVs present in autosomal chromosomes
+dng_variants <- read.table("All_samples_trio_variant_details.present_in_proband.auto-002.txt" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+dng_variants <- dng_variants[which(dng_variants$Proband_MTR > 0),]
+
+dng_variants <- read.table("tmp" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+dng_variants <- dng_variants[which(dng_variants$Proband_MTR > 0),]
+
+
+# DeNovoGear SNVs present in X chromosome
+dng_variants_x <- read.table("All_samples_trio_variant_details.present_in_proband.X.txt" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+dng_variants_x <- dng_variants_x[which(dng_variants_x$Proband_MTR > 0),]
+
+dng_variants_x <- read.table("Data_files/t2" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+dng_variants_x <- dng_variants_x[which(dng_variants_x$Proband_MTR > 0),]
+
+
+colnames(dng_variants)
+colnames(dng_variants_x)
+dim(dng_variants)
+dim(dng_variants_x)
+dng_variants <- rbind(dng_variants,dng_variants_x)
+dim(dng_variants)
+
+total_dnms <- as.data.frame(unique(dng_variants$Sample))
+colnames(total_dnms) <- "Sample"
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "DeNovoGear_Total"] <- nrow(dng_variants[which(dng_variants$Sample == i),])
+}
+
+#1) Filtering using probability of de novo single base pair mutation greater than 0.5
+ppdnm_filtered_keys <- read.table("Data_files/ppdnm_filtered_key.txt", header=F, check.names=FALSE, sep="\t",quote = "")
+
+dng_variants1 <- dng_variants[which(dng_variants$ID %in% ppdnm_filtered_keys$V1),]
+dim(dng_variants1)
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "PPDNM_filtered"] <- nrow(dng_variants1[which(dng_variants1$Sample == i),])
+}
+
+dng_variants1 <- merge.data.frame(dng_variants1, metadata, by.x = "Sample", by.y="Offspring")
+
+#2)Read depth (RD) of child & parents ≥ 4 ≤80
+dng_variants2 <- dng_variants1[which(dng_variants1$Proband_DEP >= 4 & dng_variants1$Pat_DEP >= 4 & dng_variants1$Mat_DEP >= 4 & dng_variants1$Proband_DEP <= 80 & dng_variants1$Pat_DEP <= 80 & dng_variants1$Mat_DEP <= 80),]
+dim(dng_variants2)
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "Read_depth_filtered"] <- nrow(dng_variants2[which(dng_variants2$Sample == i),])
+}
+
+
+#3) Removed mutations if Child must have < 35% (Wang RJ et. al. 2020) and > 70% VAF and MDR!=3 (Alt Reads to be present in both directions)
+
+dng_variants3_female <- dng_variants2[which(dng_variants2$Gender == "Female" & dng_variants2$Proband_MDR == 3 & dng_variants2$Proband_MTR >= 2 & dng_variants2$Proband_VAF >= 0.35 & dng_variants2$Proband_VAF <= 0.7),]
+dng_variants3_male <- dng_variants2[which(dng_variants2$Gender == "Male" & dng_variants2$CHROM != "X" & dng_variants2$Proband_MDR == 3 & dng_variants2$Proband_MTR >= 2 & dng_variants2$Proband_VAF >= 0.35 & dng_variants2$Proband_VAF <= 0.7),]
+
+dng_variants3_male_x <- dng_variants2[which(dng_variants2$Gender == "Male" & dng_variants2$CHROM == "X" & dng_variants2$Proband_MDR == 3 & dng_variants2$Proband_MTR >= 2 & dng_variants2$Proband_VAF > 0.7),]
+
+dim(dng_variants3_female)
+dim(dng_variants3_male)
+dim(dng_variants3_male_x)
+
+dng_variants3 <- rbind(dng_variants3_female, dng_variants3_male, dng_variants3_male_x)
+dim(dng_variants3)
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "Sample_AltRead_filtered"] <- nrow(dng_variants3[which(dng_variants3$Sample == i),])
+}
+
+write.table(dng_variants3, file="All_samples.trio_variant_details-3Filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+#4) Removed DNMs that fell in highly repetitive regions
+#     awk -F "\t" '{if($1 !~/Sample/){print $2"\t"$3-1"\t"$3"\t"$_}}' All_samples.trio_variant_details-3Filtered.txt > All_samples.trio_variant_details-3Filtered.bed
+#     bedtools intersect -a All_samples.trio_variant_details-3Filtered.bed -b ~/Reference/rheMac10/simpleRepeat.bed -v -header > All_samples.trio_variant_details-4Filtered.bed
+#     cut -f4- All_samples.trio_variant_details-4Filtered.bed > All_samples.trio_variant_details-4Filtered.txt
+
+dng_variants4 <- read.table("Data_files/All_samples.trio_variant_details-4Filtered.txt" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+dim(dng_variants4)
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "Simple_repeats_filtered"] <- nrow(dng_variants4[which(dng_variants4$Sample == i),])
+}
+
+
+#5) Removed DNMs that fell within known segmental duplication.
+#     bedtools intersect -a All_samples.trio_variant_details-4Filtered.bed -b ~/Reference/rheMac10/tandemDups.bed -v -header > All_samples.trio_variant_details-5Filtered.bed
+#     cut -f4- All_samples.trio_variant_details-5Filtered.bed > All_samples.trio_variant_details-5Filtered.txt
+
+dng_variants5 <- read.table("Data_files/All_samples.trio_variant_details-5Filtered.txt" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+dim(dng_variants5)
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "Seg_dups_filtered"] <- nrow(dng_variants5[which(dng_variants5$Sample == i),])
+}
+
+#6) Allele frequency in mGAP v2.1 < 0.01
+#     bedtools sort -i All_samples.trio_variant_details-5Filtered.bed -g ~/Reference/rheMac10/rheMac10_reordered.order.txt  > All_samples.trio_variant_details-5Filtered.sorted.bed
+#     bedtools intersect -a All_samples.trio_variant_details-5Filtered.bed -b ~/macaca_mulatta/mGap.v2.1.common.vcf.gz -v -header -sorted -g ~/Reference/rheMac10/rheMac10_reordered.chrom.sizes > All_samples.trio_variant_details-6Filtered.bed
+#     cut -f4- All_samples.trio_variant_details-6Filtered.bed > All_samples.trio_variant_details-6Filtered.txt
+
+dng_variants6 <- read.table("Data_files/All_samples.trio_variant_details-6Filtered.txt" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+dim(dng_variants6)
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "mGAP_filtered"] <- nrow(dng_variants6[which(dng_variants6$Sample == i),])
+}
+
+#7) Removed mutations if either parents have >1 read supporting the alternative allele and >10% VAF
+
+dng_variants7 <- dng_variants6[which(dng_variants6$Pat_VAF <= 0.1 & dng_variants6$Mat_VAF <= 0.1 & dng_variants6$Pat_MTR <= 1 & dng_variants6$Mat_MTR <= 1),]
+dim(dng_variants7)
+
+for(i in total_dnms$Sample){
+   total_dnms[which(total_dnms$Sample == i), "Parents_AltRead_filtered"] <- nrow(dng_variants7[which(dng_variants7$Sample == i),])
+}
+write.table(dng_variants7, file="All_samples.trio_variant_details-7Filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+possible_mosaics <- dng_variants6[which((dng_variants6$Pat_VAF <= 0.1 & dng_variants6$Mat_VAF <= 0.1) & ((dng_variants6$Pat_MTR > 1 & dng_variants6$Pat_MDR == 3) | (dng_variants6$Mat_MTR > 1 & dng_variants6$Mat_MDR == 3))),]
+write.table(possible_mosaics, file="possible_mosaics.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+
+#8) Binomial Test
+###pbiom per given sample. bonferroni test for every single p values that you have calculated per dnm
+#ALT_individual is count of c in child 1
+#REF_individual is count of all the other allele in child 1
+#ALT_all is count of c in all the other children but child 1
+#REF_all is count of all other alleles but c in the rest of the children but child 1
+
+
+###The above variants were recalled in all samples from each donor using an in-house re-genotyping algorithm (cgpVAF).
+cgpvaf_data <- read.table("Data_files/18607_17573_snp_vaf.tsv" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+
+
+#List of Parents
+parents <- read.table("Data_files/Parents.txt" , header=F, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+cgpvaf_data_samples <- cgpvaf_data[,!grepl(paste(parents$V1, collapse="|"),colnames(cgpvaf_data))]
+cgpvaf_data_samples <- cgpvaf_data_samples[,grepl("MTR|DEP",colnames(cgpvaf_data_samples))]
+cgpvaf_data_samples <- cbind(cgpvaf_data[,c("Chrom","Pos","Ref", "Alt")],cgpvaf_data_samples)
+cgpvaf_data_samples$ID <- paste(cgpvaf_data_samples$Chrom, cgpvaf_data_samples$Pos, cgpvaf_data_samples$Ref, cgpvaf_data_samples$Alt, sep = "_")
+
+
+df_for_binom <- as.data.frame(cgpvaf_data_samples$ID)
+colnames(df_for_binom) <- "ID"
+tmp <- cgpvaf_data_samples[,grepl("MTR",colnames(cgpvaf_data_samples))]
+colnames(tmp) <- gsub("_MTR", "", colnames(tmp))
+tmp[ , colnames(tmp)] <- NA
+df_for_binom <- cbind(df_for_binom, tmp)
+
+for(samp in colnames(tmp)){
+  for(i in cgpvaf_data_samples$ID){
+    ALT_individual <- cgpvaf_data_samples[which(cgpvaf_data_samples$ID == i), paste(samp,"MTR",sep="_")]
+    REF_individual <- cgpvaf_data_samples[which(cgpvaf_data_samples$ID == i), paste(samp,"DEP",sep="_")]
+    ALT_others <- cgpvaf_data_samples[which(cgpvaf_data_samples$ID == i), which(names(cgpvaf_data_samples) != paste(samp,"MTR",sep="_"))]
+    ALT_others <- ALT_others[,grepl("MTR",colnames(ALT_others))]
+    REF_others <- cgpvaf_data_samples[which(cgpvaf_data_samples$ID == i), which(names(cgpvaf_data_samples) != paste(samp,"DEP",sep="_"))]
+    REF_others <- REF_others[,grepl("DEP",colnames(REF_others))]
+    df_for_binom[which(df_for_binom$ID == i),samp] = pbinom(ALT_individual, REF_individual, p=median((as.numeric(ALT_others)/as.numeric(REF_others))),lower.tail=FALSE)
+  }
+}
+
+df_for_binom_melt <- melt(df_for_binom, id.vars = c("ID"), value.name = "p_value", variable.name = "Sample")
+df_for_binom_melt$p_value_adjusted <-  p.adjust(df_for_binom_melt$p_value, method = "fdr")
+df_for_binom_melt$ID2 <- paste0(df_for_binom_melt$ID,"_", df_for_binom_melt$Sample)
+
+df_for_binom_melt <- df_for_binom_melt[-which(is.na(df_for_binom_melt$p_value_adjusted)),]
+
+df_for_binom_melt <- df_for_binom_melt[which(df_for_binom_melt$p_value_adjusted < 0.05),]
+rownames(df_for_binom_melt) <- NULL
+
+write.table(df_for_binom_melt$ID2, file = "~/pbinom_variant_id.txt", quote = F, row.names = F)
+
+dng_variants8 <- dng_variants7[which(dng_variants7$ID %in% df_for_binom_melt$ID2),]
+dim(dng_variants8)
+
+write.table(dng_variants8, file="~/All_samples.trio_variant_details-8Filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+for(i in total_dnms$Sample){
+  total_dnms[which(total_dnms$Sample == i), "pbinom_filtered"] <- nrow(dng_variants8[which(dng_variants8$Sample == i),])
+}
+
+#total_dnms <- merge.data.frame(total_dnms, metadata, by.x = "Sample", by.y="Offspring")
+
+write.table(total_dnms, file="/Users/rs30/volumes/rs30_lustre/rs30-125/Macaque_Signatures-Conrad/cgpvaf_mpboot/18607/total_dnms.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+## Calculating Variants filtered at each step.
+total_dnms$pbinom_filtered <- total_dnms$Parents_AltRead_filtered - total_dnms$pbinom_filtered
+total_dnms$Parents_AltRead_filtered <- total_dnms$mGAP_filtered - total_dnms$Parents_AltRead_filtered
+total_dnms$mGAP_filtered <- total_dnms$Seg_dups_filtered - total_dnms$mGAP_filtered
+total_dnms$Seg_dups_filtered <- total_dnms$Simple_repeats_filtered - total_dnms$Seg_dups_filtered
+total_dnms$Simple_repeats_filtered <- total_dnms$Sample_AltRead_filtered - total_dnms$Simple_repeats_filtered
+total_dnms$Sample_AltRead_filtered <- total_dnms$Read_depth_filtered - total_dnms$Sample_AltRead_filtered
+total_dnms$Read_depth_filtered <- total_dnms$PPDNM_filtered - total_dnms$Read_depth_filtered
+total_dnms$PPDNM_filtered <- total_dnms$DeNovoGear_Total - total_dnms$PPDNM_filtered
+total_dnms$FinalDNMs <- total_dnms$DeNovoGear_Total - total_dnms$PPDNM_filtered - total_dnms$Read_depth_filtered - total_dnms$Sample_AltRead_filtered - total_dnms$Parents_AltRead_filtered - total_dnms$Simple_repeats_filtered - total_dnms$Seg_dups_filtered - total_dnms$mGAP_filtered - total_dnms$pbinom_filtered
+
+total_dnms$Hyp_Status <- "Non_Hyp"
+total_dnms[which(total_dnms$Sample %in% c("34764","31970","33258","35286","36319","30547")),"Hyp_Status"] <- "Hyp"
+
+#Callable bases were determined for each sample using mosdepth (https://github.com/brentp/mosdepth) with categories split as "0:1:4:80:"
+callable_bases <- read.table("mosdepth/Callable_bases_Trios-Sep2022.txt" , header=T, check.names=FALSE, sep="\t", quote = "", row.names = NULL)
+
+total_dnms <- merge.data.frame(total_dnms, callable_bases[,c("Sample", "CallableBases")], by.x="Sample", by.y = "Sample", all.x = TRUE)
+
+total_dnms$FinalDNMs_normalized <- (total_dnms$FinalDNMs/total_dnms$CallableBases)*2842222659
+
+
+write.table(total_dnms, file="/Users/rs30/volumes/rs30_lustre/rs30-125/Macaque_Signatures-Conrad/cgpvaf_mpboot/18607/All_samples.final_filtered_DNMs_pbinom.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+```
+
+# Figure 3a+b 
+```{r}
+r.offspringtable <- read.table("Data_files/All_samples.final_filtered_DNMs_pbinom_withPhasing.txt" , header=T, check.names=FALSE, sep="\t", quote = "")
+names(r.offspringtable)[names(r.offspringtable) == 'Sample'] <- 'Offspring'
+
+r.offspringtable<-r.offspringtable[r.offspringtable$Offspring!=31888,] #31888 had a sample mixup and is not included
+
+#create dummy variable for MBD4 carriers
+mbd4_carriers<-scan("Data_files/mGAP_MBD4_carriers.txt",what="character")
+
+r.offspringtable$mbd4_carrier<-0
+r.offspringtable$mbd4_carrier[which(r.offspringtable$Dam %in% mbd4_carriers & !r.offspringtable$Dam==26537)]<-1
+
+r.offspringtable_noHYP <- subset(r.offspringtable, r.offspringtable$Hyp_Status=="Non_Hyp")
+
+
+
+#Simple Model for correlating Paternal age to number of de-novo mutations
+
+
+modelnonhyp <- lm(FinalDNMs ~ Paternal_age_at_offspring_birth, data = r.offspringtable_noHYP)
+
+plot(r.offspringtable$Paternal_age_at_offspring_birth, r.offspringtable$FinalDNMs, xlab = "Paternal Age", ylab = "De novo mutation count", pch = c(4, 1)[as.factor(r.offspringtable_noHYP$Hyp_Status)])
+plot(r.offspringtable$Paternal_age_at_offspring_birth, r.offspringtable$FinalDNMs, xlab = "Paternal Age", ylab = "De novo mutation count")
+
+abline(modelnonhyp, col = "black")
+
+#Simple Model for correlating Maternal age to number of de-novo mutations
+r.offspringtable_HYP<-r.offspringtable[r.offspringtable$Dam==26537,]
+
+modeldamnonhyp <- lm(FinalDNMs ~ Dam_age, data = r.offspringtable_noHYP)
+
+
+plot(r.offspringtable$Dam_age, r.offspringtable$FinalDNMs, xlab = "Maternal Age", ylab = "De novo mutation count", pch = c(4, 1)[as.factor(r.offspringtable$Hyp_Status)])
+abline(modeldamnonhyp, col = "black")
+
+
+###### FULL MODEL
+r.offspringtable$Hyp_Status<-factor(r.offspringtable$Hyp_Status,levels=c("Non_Hyp","Hyp"))
+
+totalmutationstest <- glm(FinalDNMs ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Gender + Hyp_Status + mbd4_carrier + CallableBases, family="poisson", data=r.offspringtable)
+summary(totalmutationstest)
+stats::coef(totalmutationstest)
+stats::confint(totalmutationstest)
+#add_ci(r.offspringtable, totalmutationstest, alpha = 0.05,nSims = 100)
+
+
+#Formally test for enrichment for CpA context alone
+r.offmutmerged<-read.table("Data_files/Rashesh_Figure5b.txt",header=T)
+r.offmutmerged$Hyp_Status<-factor(r.offmutmerged$Hyp_Status,levels=c("Non_Hyp","Hyp"))
+r.offmutmerged$mbd4_carrier<-0
+r.offmutmerged$mbd4_carrier[which(r.offmutmerged$Dam %in% mbd4_carriers & !r.offmutmerged$Dam==26537)]<-1
+
+summary(totalmutationstest <- glm(Total.Mutations ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(ACtest <- glm(A.C ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(ATtest <- glm(A.T ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(AGtest <- glm(A.G ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(CAtest <- glm(C.A ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(CGtest <- glm(C.G ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(CTtest <- glm(C.T.total ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(CtCPGtest <- glm(C.T..CpG ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(CtnonCPGtest <- glm(C.T.non.CpG ~ Hyp_Status + Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+summary(CtCPAtest <- glm(C.T..CpA ~ Hyp_Status + mbd4_carrier+Paternal_age_at_offspring_birth + Dam_age + Dam_age*Hyp_Status, family="poisson", data=r.offmutmerged))
+
+
+```
+
+# Phasing mutations
+```{bash Phasing}
+#1) Germline variants were called for each individual using HaplotypeCaller in GVCF mode
+gatk --java-options "-Xmx16g" HaplotypeCaller  -R ~/Reference/rheMac10/rheMac10_renamed.fa -I ~/BAM_files/${SAMPLE}.bam -O  ~/HaplotypeCaller_gvcfs/${SAMPLE}.haplotypecaller.v4.1.7.0.g.vcf.gz -ERC GVCF -G StandardAnnotation -G AS_StandardAnnotation -G StandardHCAnnotation
+
+#2)Then combine the GVCFs for each Trio using the Pedigree information
+#trio.ped format
+##F1	18607	0	0	1	1
+##F1	18167	0	0	2	1
+##F1	21061	18607	18167	1	1
+
+ls ./Trio_analyses/*/trio.ped | while read FILE ; do tail -1 $FILE | cut -f2,3,4 | while read -r SAMPLE PAT MAT; do gatk --java-options "-Xmx16g" CombineGVCFs -R ~/Reference/rheMac10/rheMac10_reordered.fa --variant ~/HaplotypeCaller_gvcfs/$SAMPLE.haplotypecaller.v4.1.7.0.g.vcf.gz --variant ~/HaplotypeCaller_gvcfs/$PAT.haplotypecaller.v4.1.7.0.g.vcf.gz --variant ~/HaplotypeCaller_gvcfs/$MAT.haplotypecaller.v4.1.7.0.g.vcf.gz -O  ~/${SAMPLE}/${SAMPLE}.trio.haplotypecaller.v4.1.7.0.g.vcf.gz
+
+#3) Genotype GVCFs to get variant calls. 
+
+gatk --java-options "-Xmx16g" GenotypeGVCFs -R ~/Reference/rheMac10/rheMac10_reordered.fa -V ~/Macaque_Signatures-Conrad/Trio_analyses/${SAMPLE}/${SAMPLE}.trio.haplotypecaller.v4.1.7.0.g.vcf.gz -O ~/Trio_analyses/${SAMPLE}/${SAMPLE}.trio.haplotypecaller.v4.1.7.0.vcf.gz
+
+
+#4) Run PhaseMyDeNovo (https://github.com/queenjobo/PhaseMyDeNovo)
+#Create the dnm_input.txt file as described in the GitHub repo
+
+python ~/PhaseMyDeNovo/phase_my_denovos.py -dnmfile ~/Trio_analyses/${SAMPLE}/dnm_input.txt -outfile ~/Trio_analyses/${SAMPLE}/PhaseMyDeNovo_output.txt
+
+#Summarise the phasing data from the output. DNMs with mixed phase where listed under "Mixed/Unknown category in Figure3C"
+
+```
+
+# Figure 3C
+```{r}
+library(Rmisc)
+phasing_counts_18607 <- read.table("Data_files/All_samples.final_filtered_DNMs_pbinom_withPhasing.txt" , header=T, check.names=FALSE, sep="\t", quote = "")
+
+phasing_counts_18607 <- phasing_counts_18607[which(phasing_counts_18607$Sample != "31888"),] #31888 had a sample mixup and is not included
+
+total_df <- summarySE(data = phasing_counts_18607, measurevar=c("FinalDNMs"), groupvars = c("Hyp_Status"), na.rm = FALSE, conf.interval = 0.95, .drop = TRUE)
+total_df$Type <- "Total"
+colnames(total_df) <- c("Hyp_Status","N","Mean","sd","se","ci","Type")
+
+mat_df<- summarySE(data = phasing_counts_18607, measurevar=c("Maternal"), groupvars = c("Hyp_Status"), na.rm = FALSE, conf.interval = 0.95, .drop = TRUE)
+mat_df$Type <- "Maternal"
+colnames(mat_df) <- c("Hyp_Status","N","Mean","sd","se","ci","Type")
+
+pat_df<- summarySE(data = phasing_counts_18607, measurevar=c("Paternal"), groupvars = c("Hyp_Status"), na.rm = FALSE, conf.interval = 0.95, .drop = TRUE)
+pat_df$Type <- "Paternal"
+colnames(pat_df) <- c("Hyp_Status","N","Mean","sd","se","ci","Type")
+
+unk_df <- summarySE(data = phasing_counts_18607, measurevar=c("Mixed_Unkown"), groupvars = c("Hyp_Status"), na.rm = FALSE, conf.interval = 0.95, .drop = TRUE)
+unk_df$Type <- "Mixed/Unkown"
+colnames(unk_df) <- c("Hyp_Status","N","Mean","sd","se","ci","Type")
+
+df <- rbind(mat_df,pat_df, unk_df)
+df$Type <- factor(df$Type, levels = rev(c("Maternal", "Paternal", "Mixed/Unkown")))
+
+
+p <- ggplot(df,aes(fill=Type, y=Mean, x=Hyp_Status, label=round(Mean))) + geom_bar(position = position_dodge(), stat="identity")+geom_errorbar(aes(ymin = Mean-sd, ymax = Mean+sd), width = 0.3, position = position_dodge(0.9))+theme_pubr()+scale_fill_manual(values=c("darkgrey","lightslateblue","darksalmon"))+ylab("Number of DNMs")+xlab("")
+
+png("~/Parental_DNM_phasing_PhaseMyDenovos_18607.png", res=300, units="in", width=7, height=5)
+p
+dev.off()
+
+pdf(file="~/Parental_DNM_phasing_PhaseMyDenovos_18607.pdf",width=7, height=5)
+p
+dev.off()
+
+poisson.test(as.integer(df[which(df$Hyp_Status == "Hyp" & df$Type == "Maternal"),"Mean"]),as.integer(df[which(df$Hyp_Status == "Non_Hyp" & df$Type == "Maternal"),"Mean"]),r = 1)$p.value
+#7.542625e-21
+poisson.test(as.integer(df[which(df$Hyp_Status == "Hyp" & df$Type == "Paternal"),"Mean"]),as.integer(df[which(df$Hyp_Status == "Non_Hyp" & df$Type == "Paternal"),"Mean"]),r = 1)$p.value
+#0.6092664
+
+```
+
+# Germline variant calling in the parents (sire and dams)
+```{bash Parental Germline Calling}
+
+#1) Germline variants were called for each parent using HaplotypeCaller
+gatk --java-options "-Xmx16g" HaplotypeCaller  -R ~/Reference/rheMac10/rheMac10_reordered.fa -I ~/BAM_files/${SAMPLE}.bam -O ~/HaplotypeCaller_Parents/${SAMPLE}.haplotypecaller.v4.1.7.0.vcf.gz --annotate-with-num-discovered-alleles --max-alternate-alleles 3 --read-filter OverclippedReadFilter --read-filter GoodCigarReadFilter -A DepthPerAlleleBySample -A StrandBiasBySample -A Coverage -A FisherStrand -A MappingQualityRankSumTest -A MappingQualityZero -A QualByDepth -A RMSMappingQuality -A ReadPosRankSumTest
+
+
+#2) Filtering using GATK suggested cutoffs (https://gatk.broadinstitute.org/hc/en-us/articles/360035890471?id=11069)
+
+ls *.haplotypecaller.v4.1.7.0.vcf.gz | while read FILE ; do echo "bcftools filter -i \"(TYPE==\\\"snp\\\" && INFO/QD >= 2 && INFO/FS <= 60 && INFO/SOR <= 3 && INFO/MQ >= 40 && INFO/MQRankSum >= -12.5 && INFO/ReadPosRankSum >= -8.0) || (TYPE!=\\\"snp\\\" && INFO/QD >= 2 && INFO/FS <= 200 && ((FORMAT/AD[0:0] > 0 && INFO/ReadPosRankSum >= -20.0) || FORMAT/AD[0:0] == 0 )) \" -Oz -o ${FILE%.vcf.gz}.hardFiltered.vcf.gz $FILE " | bsub -J ${FILE%.vcf.gz}_hardfilter -o ${FILE%.vcf.gz}_hardfilter.out -e ${FILE%.vcf.gz}_hardfilter.err -q long -n 1 -R 'select[mem>=20000] rusage[mem=20000] span[hosts=1]' -M20000 -env "all" ; done
+
+#3) Filtering known population common (AF >= 0.01) variants.
+ls *.haplotypecaller.v4.1.7.0.hardFiltered.vcf.gz | while read FILE ; do echo "bcftools isec $FILE ~/macaca_mulatta/mGap.v2.1.common.vcf.gz  -p ${FILE%.haplotypecaller.v4.1.7.0.hardFiltered.vcf.gz}/ -n-1 -w 1 " | bsub -J ${FILE%.haplotypecaller.v4.1.7.0.hardFiltered.vcf.gz}.bcftools -q normal -o ${FILE%.haplotypecaller.v4.1.7.0.hardFiltered.vcf.gz}/${FILE%.haplotypecaller.v4.1.7.0.hardFiltered.vcf.gz}.bcftools.out -e ${FILE%.haplotypecaller.v4.1.7.0.hardFiltered.vcf.gz}/${FILE%.haplotypecaller.v4.1.7.0.hardFiltered.vcf.gz}.bcftools.err -n 1 -R 'select[mem>=20000] rusage[mem=20000] span[hosts=1]' -M20000 -env "all" ; done 
+
+#4) The final VCFs were annotated using VEP and converted to MAF format using vcf2maf
+
+ls *.vcf | while read SAMPLE ; do ~/git_repositories/ensembl-vep/vep -i $SAMPLE -o ~/Annotation_VEP/${SAMPLE%.vcf}.annotated.vcf --offline --dir ~/vep/ --species macaca_mulatta --vcf --stats_text --force --fork 2 --variant_class --show_ref_allele --numbers --everything  ; done
+
+ls *annotated.vcf | while read FILE ; do perl ~/git_repositories/vcf2maf/vcf2maf.pl --input-vcf ${FILE} --output-maf ${FILE%.vcf}.maf --inhibit-vep --ref-fasta  ~/Reference/rheMac10/rheMac10_reordered.fa --species macaca_mulatta --ncbi-build Mmul_10 --cache-version=104  --vep-data ~/vep/  --tumor-id ${FILE%.annotated.vcf} ; done
+
+#5) All the single sample MAF files were concatenated into a single file
+
+#6) Only the homozygous variants with HIGH or Moderate impact on the Genes of interest (supplementary table S3) were extracted into a separate file. (Figure 4)
+
+
+```
+# Figure 4
+```{r}
+library(maftools)
+
+parental_Goi_homozygous <- read.maf(maf="Data_files/18607_Parental.hardFiltered.mgapFiltered.regionFiltered.high_moderate.GOI_homozygous.maf", clinicalData = "Data_files/Metadata_all_Parental-4Aug2022_18607Family.txt")
+#The metadata file indicates which sample are Sire and which are Dam
+# Tumor_Sample_Barcode    Parent
+# 18607   Sire
+# 25329   Sire
+# 30186   Sire
+# 30325   Sire
+# 17573   Dam
+
+
+pdf(file="Data_files/18607_Parental.hardFiltered.mgapFiltered.regionFiltered.high_moderate.GOI_homozygous.pdf", width=10, height=7)
+oncoplot(maf = parental_Goi_homozygous, top = 50, showTumorSampleBarcodes = TRUE, sortByAnnotation=TRUE, clinicalFeatures=c('Parent'), removeNonMutated=FALSE, groupAnnotationBySize=FALSE, drawRowBar = FALSE, drawColBar = FALSE, sepwd_genes=0.5, sepwd_samples=0.5, showTitle=FALSE, showPct=FALSE, anno_height=0.2)
+dev.off()
+
+
+```
+
+# Figure 5a
+## Normalizing COSMIC signatures for rhesus macaque genome
+```{r}
+#COSMIC v3.2
+sbs3_2_cancer_signatures <- read.table('Data_files/COSMIC_v3.2_SBS_GRCh37.txt', header=T, check.names=FALSE, sep="\t", quote = "")
+sbs3_2_cancer_signatures[,"Type"]
+
+rownames(sbs3_2_cancer_signatures) <- sbs3_2_cancer_signatures$Type
+sbs3_2_cancer_signatures <- sbs3_2_cancer_signatures[,-1]
+
+
+sbs3_2_cancer_signatures_rheMAC10 <- sbs3_2_cancer_signatures
+for (i in 1:ncol(sbs3_2_cancer_signatures)) {
+  sbs3_2_cancer_signatures_rheMAC10[,i] <- (sbs3_2_cancer_signatures[,i]/human.trinucleotides[types]) * macaque.trinucleotides2[types]
+  sbs3_2_cancer_signatures_rheMAC10[,i] <- sbs3_2_cancer_signatures_rheMAC10[,i] / sum(sbs3_2_cancer_signatures_rheMAC10[,i])
+}
+
+write.table(sbs3_2_cancer_signatures_rheMAC10, file="Data_files/COSMIC_v3.2_SBS_rheMac10.txt", sep = "\t", quote = FALSE, row.names = TRUE)
+
+# These signatures were incorporated in the backend of SigProfilerExtractor to be used for decomposition
+```
+
+## The DNMs from Hypermutator and Non HyperMutator individuals were merged into single file respectively. And signatures were extraction using SigProfilerExtractor v1.1.7
+```{r}
+SigPro_signatures_18607 <- read.table("~/Signatures/Output_Hyp_vs_NonHyp/SBS96/Suggested_Solution/COSMIC_SBS96_Decomposed_Solution/Activities/COSMIC_SBS96_Activities.txt", header=T, row.names=1, check.names=FALSE, sep="\t")
+
+SigPro_signatures_18607 <- as.data.frame(t(SigPro_signatures_18607))
+SigPro_signatures_18607[,"Signatures"] <- rownames(SigPro_signatures_18607)
+rownames(SigPro_signatures_18607) <- NULL
+
+SigPro_signatures_18607_melt <- melt(SigPro_signatures_18607, id.vars = c("Signatures") ,variable.name = "Sample_name",value.name = "Sig_activity")
+colnames(SigPro_signatures_18607_melt) <- c("Signature", "Sample_name", "Sig_activity")
+
+SigPro_signatures_18607_melt$Sample_name <- factor(SigPro_signatures_18607_melt$Sample_name,levels=unique(SigPro_signatures_18607_melt$Sample_name))
+SigPro_signatures_18607_melt$Signature <- factor(SigPro_signatures_18607_melt$Signature,levels=unique(rev(SigPro_signatures_18607_melt$Signature)))
+head(SigPro_signatures_18607_melt)
+
+for(i in unique(SigPro_signatures_18607_melt$Sample_name)){
+  SigPro_signatures_18607_melt[which(SigPro_signatures_18607_melt$Sample_name == i ),"SBStotal"] <- sum(SigPro_signatures_18607_melt[which(SigPro_signatures_18607_melt$Sample_name == i ),"Sig_activity"])
+}
+rownames(SigPro_signatures_18607_melt) <- NULL
+SigPro_signatures_18607_melt[,"Sig_contribution"] <- SigPro_signatures_18607_melt[,"Sig_activity"]/SigPro_signatures_18607_melt[,"SBStotal"]
+
+
+nb.cols <- length(unique(SigPro_signatures_18607_melt$Signature))
+Signature_colors <- get_palette(palette = "Paired", nb.cols)
+names(Signature_colors) <- unique(SigPro_signatures_18607_melt$Signature)
+
+pie(rep(1,nb.cols), col=Signature_colors, labels = names(Signature_colors))
+Signature_colors[["SBS1"]] <- "#53A2EA"
+Signature_colors[["SBS5"]] <- "#66C0B7"
+pie(rep(1,nb.cols), col=Signature_colors, labels = names(Signature_colors))
+
+
+
+SigPro_signatures_18607_melt.bak <- SigPro_signatures_18607_melt
+SigPro_signatures_18607_melt <- SigPro_signatures_18607_melt.bak
+
+ymax <- max(SigPro_signatures_18607_melt$SBStotal)+10
+
+SigPro_signatures_18607_melt <- SigPro_signatures_18607_melt[order(as.numeric(SigPro_signatures_18607_melt$SBStotal)),]
+rownames(SigPro_signatures_18607_melt) <- NULL
+SigPro_signatures_18607_melt$Sample_name <- factor(SigPro_signatures_18607_melt$Sample_name, levels = unique(SigPro_signatures_18607_melt[order(as.numeric(SigPro_signatures_18607_melt$SBStotal)),"Sample_name"]))
+
+p_act <- ggplot(SigPro_signatures_18607_melt, aes(x = Sample_name , y = Sig_activity)) + geom_col(aes(fill = Signature), width =0.8)+scale_fill_manual(name = "Signature", values = Signature_colors)+theme_pubr()+ theme(legend.position = "right", legend.direction = "vertical",  legend.title=element_text(size=20), legend.text=element_text(size=18),axis.text.x = element_blank(), axis.text.y = element_text(size = 18), axis.title.y = element_text(size = 20),strip.text.x = element_text(face = "bold", hjust = 0.5, size=12), panel.spacing = unit(1, "mm"), strip.background.x = element_blank(), plot.margin = margin(2, 2, 0, 2, "mm"))+xlab("")+ylab("Signature Activities")+coord_cartesian(ylim = c(0, ymax), expand = FALSE)+ guides(fill=guide_legend(ncol=1))
+
+p_act
+
+pdf(file="~/Signatures/SigProfier_Hyp_vs_NonHyp.pdf",height=7, width=5)
+p_act
+dev.off()
+```
+
+# Figure 5b
+```{r}
+ x<-read.table("Data_files/Rashesh_Figure5b.txt",header=T)
+
+out<-data.frame(Var1=c("Total Mutation","A>C","A>G","A>T","C>A","C>G","C>T total","C>T at CpG"),norm=rep(0,8),hyp=rep(0,8))
+out$ciu_hyp<-0
+out$cil_hyp<-0
+out$ciu<-0
+out$cil<-0
+for (i in 2:9){
+my.mod<-lm(x[x$Hyp_Status=="Non_Hyp",i]~1)
+out$norm[i-1]<-my.mod$coefficients[1]
+out$cil[i-1]<-confint(my.mod)[1]
+out$ciu[i-1]<-confint(my.mod)[2]
+
+my.mod<-lm(x[x$Hyp_Status=="Hyp",i]~1)
+out$hyp[i-1]<-my.mod$coefficients[1]
+out$cil_hyp[i-1]<-confint(my.mod)[1]
+out$ciu_hyp[i-1]<-confint(my.mod)[2]
+
+}
+
+ze_barplot<-barplot(as.matrix(t(out[,c(2,3)])),beside=T,legend=c("Non hypermutator","Hypermutator"),ylab="Mutation Proportion",names=out$Var1,xlab="Motif",ylim=c(0,70))
+
+error.bar(ze_barplot[2,],out$hyp,out$ciu_hyp,out$cil_hyp)
+error.bar(ze_barplot[1,],out$norm,out$ciu,out$cil)
+
+
+```
+
+# Figure 5C
+```{r}
+x<-read.table("Data_files/Rashesh_CT_mutWOffspring.txt")
+x$X3code<-toupper(x$X3code)
+x$uid<-paste(x$location,x$Offspring,sep = )
+x<-x[!duplicated(x$uid),]
+
+
+#CODE TO MERGE THE TOP AND BOTTOM STRAND (C/G) AT CENTRAL BASE
+cmids<-x
+cmids$X3code[which(x$X3code=="TGT")]<-"ACA"
+cmids$X3code[which(x$X3code=="GGT")]<-"ACC"
+cmids$X3code[which(x$X3code=="AGT")]<-"ACT"
+cmids$X3code[which(x$X3code=="TGG")]<-"CCA"
+cmids$X3code[which(x$X3code=="GGG")]<-"CCC"
+cmids$X3code[which(x$X3code=="AGG")]<-"CCT"
+cmids$X3code[which(x$X3code=="TGC")]<-"GCA"
+cmids$X3code[which(x$X3code=="GGC")]<-"GCC"
+cmids$X3code[which(x$X3code=="AGC")]<-"GCT"
+cmids$X3code[which(x$X3code=="TGA")]<-"TCA"
+cmids$X3code[which(x$X3code=="GGA")]<-"TCC"
+cmids$X3code[which(x$X3code=="AGA")]<-"TCT"
+cmids$X3code[which(x$X3code=="CGA")]<-"TCG"
+cmids$X3code[which(x$X3code=="CGC")]<-"GCG"
+cmids$X3code[which(x$X3code=="CGG")]<-"CCG"
+cmids$X3code[which(x$X3code=="CGT")]<-"ACG"
+
+#drop sites in CpG context for Figure 5C
+cmids<-cmids[! cmids$X3code %in% c("ACG","CCG","GCG","TCG"),]
+
+hyp<-c(30547,31970,33258,34764,35286,36319)
+hyp_x<-cmids[cmids$Offspring %in% hyp,]
+no_x<-cmids[!cmids$Offspring %in% hyp,]
+
+t1<-data.frame(table(hyp_x$X3code))
+t2<-data.frame(table(no_x$X3code))
+
+t1$hyp_norm<-t1[,2]/sum(t1[,2])
+t2$norm<-t2[,2]/sum(t2[,2])
+
+out<-merge(t1,t2,by.x=1,by.y=1,all.x=T,all.y=T)
+out[is.na(out$Freq.x)==T,2]<-0
+out[is.na(out$hyp_norm)==T,3]<-0
+
+hyp_dnm_sum<-sum(out$Freq.x)
+dnm_sum<-sum(out$Freq.y)
+
+out$cil<-0
+out$ciu<-0
+out$cil_hyp<-0
+out$ciu_hyp<-0
+
+for (i in 1:dim(out)[1]){
+tmp<-  binom.test(out$Freq.y[i],dnm_sum)
+out$cil[i]<-tmp$conf.int[1]
+out$ciu[i]<-tmp$conf.int[2]
+
+tmp<-  binom.test(out$Freq.x[i],hyp_dnm_sum)
+out$cil_hyp[i]<-tmp$conf.int[1]
+out$ciu_hyp[i]<-tmp$conf.int[2]
+}
+
+#A function to add arrows on the chart
+error.bar <- function(x, y, upper, lower, length=0.1,...){
+  arrows(x,upper, x, lower, angle=90, code=3, length=0.05)
+}
+
+
+ze_barplot<-barplot(as.matrix(t(out[,c(3,5)])),beside=T,legend=c("Hypermutator","Non hypermutator"),ylab="Mutation Proportion",names=out$Var1,xlab="Motif",ylim=c(0,0.6))
+
+error.bar(ze_barplot[1,],cmids$hyp_norm,out$ciu_hyp,out$cil_hyp)
+error.bar(ze_barplot[2,],cmids$norm,out$ciu,out$cil)
+
+
+```
